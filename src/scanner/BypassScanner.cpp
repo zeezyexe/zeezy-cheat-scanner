@@ -148,7 +148,7 @@ void EnableSecurityPrivilege() {
         return;
 
     LUID luid{};
-    if (LookupPrivilegeValueW(nullptr, SE_SECURITY_NAME, &luid)) {
+    if (LookupPrivilegeValueW(nullptr, L"SeSecurityPrivilege", &luid)) {
         TOKEN_PRIVILEGES tp{};
         tp.PrivilegeCount = 1;
         tp.Privileges[0].Luid = luid;
