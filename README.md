@@ -15,6 +15,11 @@ DC Server: https://discord.gg/GkD535S2qh
 
 Discord: .zeezy
 
+## Download
+
+Prebuilt binaries are published automatically on the [Releases](../../releases) page whenever
+a version tag is pushed — no build tools required, just download and run.
+
 ## Features
 
 - **Memory scan** — searches the target `javaw.exe` process's readable private memory for
