@@ -20,6 +20,7 @@ add_executable(zeezy WIN32
     src/scanner/MemoryScanner.cpp
     src/scanner/ClasspathScanner.cpp
     src/scanner/BypassScanner.cpp
+    src/scanner/PEIntegrityScanner.cpp
     src/report/ReportGenerator.cpp
 )
 

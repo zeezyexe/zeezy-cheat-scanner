@@ -2,6 +2,7 @@
 
 #include "scanner/BypassScanner.hpp"
 #include "scanner/ClasspathScanner.hpp"
+#include "scanner/PEIntegrityScanner.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1275,6 +1276,11 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
     for (const auto& finding : ScanForBypassMethods()) {
         RegisterDetection(finalSummary, finding.name + ": " + finding.detail + " (Bypass Method)",
             Severity::Suspicious, 0, 0);
+    }
+
+    for (const auto& finding : ScanForErasedPEHeaders(pid)) {
+        RegisterDetection(finalSummary, finding.moduleName + ": " + finding.detail + " (PE Header)",
+            finding.severity, 0, 0);
     }
 
     m_summary = std::move(finalSummary);
