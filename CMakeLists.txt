@@ -21,6 +21,9 @@ add_executable(zeezy WIN32
     src/scanner/ClasspathScanner.cpp
     src/scanner/BypassScanner.cpp
     src/scanner/PEIntegrityScanner.cpp
+    src/scanner/ModuleTrustScanner.cpp
+    src/scanner/PrefetchScanner.cpp
+    src/scanner/ExternalToolScanner.cpp
     src/report/ReportGenerator.cpp
 )
 
@@ -38,6 +41,8 @@ target_link_libraries(zeezy PRIVATE
     shell32
     shlwapi
     wevtapi
+    wintrust
+    crypt32
 )
 
 if(MSVC)

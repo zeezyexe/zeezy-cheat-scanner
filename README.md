@@ -32,6 +32,22 @@ a version tag is pushed — no build tools required, just download and run.
   artifacts that would normally record what ran (SysMain/DPS/BAM/DCOM/EventLog service state,
   PowerShell logging policy, Prefetch, the USN journal, Amcache, Activities Cache, and recent
   Recycle Bin activity) (`src/scanner/BypassScanner.cpp`).
+- **PE header integrity** — verifies every module normally loaded in the target process still
+  has an intact DOS/NT header in memory; an erased header on a loaded module is a common
+  self-hiding technique (`src/scanner/PEIntegrityScanner.cpp`).
+- **Module trust** — checks every DLL loaded in the target process for both its location (game/
+  launcher directory vs. somewhere unexpected) and its Authenticode signature. Only flags a DLL
+  that's both outside any expected location *and* unsigned/invalidly signed, or one with an
+  actively tampered signature anywhere — a plain unsigned DLL in an expected location (the
+  normal case for LWJGL/JNA natives) is not flagged (`src/scanner/ModuleTrustScanner.cpp`).
+- **Prefetch scan** — checks `%WINDIR%\Prefetch` for evidence a known injector/macro tool was
+  run on this machine, even if it's since been deleted. This only matches on filename; it does
+  not parse the compressed internal contents of `.pf` files
+  (`src/scanner/PrefetchScanner.cpp`).
+- **External tool scan** — enumerates *every* running process (not just javaw.exe) for known
+  standalone injectors and macro/automation tools (`src/scanner/ExternalToolScanner.cpp`). The
+  seeded list is a starting point, not exhaustive — extend `KnownTools()`/`KnownToolNames()`
+  with any additional executable names you want covered.
 - Generates a single self-contained HTML report (`detection-results.html`) and opens it in the
   default browser when the scan finishes.
 

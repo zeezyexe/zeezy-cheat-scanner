@@ -2,7 +2,10 @@
 
 #include "scanner/BypassScanner.hpp"
 #include "scanner/ClasspathScanner.hpp"
+#include "scanner/ExternalToolScanner.hpp"
+#include "scanner/ModuleTrustScanner.hpp"
 #include "scanner/PEIntegrityScanner.hpp"
+#include "scanner/PrefetchScanner.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1280,6 +1283,23 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
 
     for (const auto& finding : ScanForErasedPEHeaders(pid)) {
         RegisterDetection(finalSummary, finding.moduleName + ": " + finding.detail + " (PE Header)",
+            finding.severity, 0, 0);
+    }
+
+    for (const auto& finding : ScanModuleTrust(pid)) {
+        RegisterDetection(finalSummary, finding.moduleName + ": " + finding.detail + " (Module Trust)",
+            finding.severity, 0, 0);
+    }
+
+    for (const auto& finding : ScanPrefetchForKnownTools()) {
+        RegisterDetection(finalSummary,
+            finding.matchedTool + " found in Prefetch (" + finding.prefetchFile + ") (Prefetch)",
+            Severity::Detect, 0, 0);
+    }
+
+    for (const auto& finding : ScanForExternalTools()) {
+        RegisterDetection(finalSummary,
+            finding.processName + " running (pid " + std::to_string(finding.pid) + ") (External Tool)",
             finding.severity, 0, 0);
     }
 
