@@ -12,6 +12,9 @@ struct ProcessInfo {
     std::string startTime;
 };
 
-std::vector<ProcessInfo> EnumerateJavawProcesses();
+// Matches both javaw.exe and java.exe - some launchers/bundled JREs run
+// the console variant instead of the windowed one, so limiting this to
+// javaw.exe alone silently misses those instances entirely.
+std::vector<ProcessInfo> EnumerateMinecraftJavaProcesses();
 
 }

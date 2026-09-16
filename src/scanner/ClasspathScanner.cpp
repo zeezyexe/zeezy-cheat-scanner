@@ -122,43 +122,95 @@ std::vector<std::wstring> SplitClasspath(const std::wstring& cp) {
     return parts;
 }
 
+// The LAST -cp/-classpath/-Djava.class.path= wins if more than one is
+// present, matching how the real `java` launcher resolves repeated
+// options - a wrapper script or launcher that appends its own flags after
+// the base command line would otherwise be silently ignored.
 std::wstring ExtractClasspathValue(const std::vector<std::wstring>& tokens) {
     const std::wstring prefix = L"-Djava.class.path=";
+    std::wstring result;
     for (size_t i = 0; i < tokens.size(); ++i) {
         const std::wstring& t = tokens[i];
         if ((t == L"-cp" || t == L"-classpath") && i + 1 < tokens.size()) {
-            return tokens[i + 1];
-        }
-        if (t.rfind(prefix, 0) == 0) {
-            return t.substr(prefix.size());
+            result = tokens[i + 1];
+        } else if (t.rfind(prefix, 0) == 0) {
+            result = t.substr(prefix.size());
         }
     }
-    return {};
+    return result;
 }
 
-std::wstring Trim(std::wstring s) {
-    size_t start = s.find_first_not_of(L" \t\r\n");
-    if (start == std::wstring::npos) return {};
-    size_t end = s.find_last_not_of(L" \t\r\n");
-    return s.substr(start, end - start + 1);
-}
-
-// Some launchers (Forge/modpacks especially) put the full argument list in an
-// @argfile because the classpath would otherwise exceed the command line
-// length limit. One argument per line, optionally quoted.
+// Some launchers (Forge/modpacks especially) put the full argument list in
+// an @argfile because the classpath would otherwise exceed the command
+// line length limit. Per the real @argfile format: arguments are
+// separated by whitespace (including newlines) rather than one-per-line,
+// single/double-quoted sections preserve internal whitespace and support
+// backslash-escaping the quote character, and '#' starts a comment that
+// runs to end of line.
 std::vector<std::wstring> ReadArgfileTokens(const std::wstring& path) {
     std::vector<std::wstring> tokens;
-    std::wifstream in(path);
+    std::wifstream in(path, std::ios::binary);
     if (!in.is_open()) return tokens;
-    std::wstring line;
-    while (std::getline(in, line)) {
-        line = Trim(line);
-        if (line.empty()) continue;
-        if (line.size() >= 2 && line.front() == L'"' && line.back() == L'"') {
-            line = line.substr(1, line.size() - 2);
+
+    std::wstring content((std::istreambuf_iterator<wchar_t>(in)), std::istreambuf_iterator<wchar_t>());
+    constexpr size_t kMaxArgfileChars = 8 * 1024 * 1024;
+    if (content.size() > kMaxArgfileChars) content.resize(kMaxArgfileChars);
+
+    std::wstring current;
+    bool inToken = false;
+    bool inQuote = false;
+    wchar_t quoteChar = 0;
+
+    size_t i = 0;
+    while (i < content.size()) {
+        const wchar_t c = content[i];
+
+        if (!inQuote && c == L'#') {
+            while (i < content.size() && content[i] != L'\n') ++i;
+            continue;
         }
-        tokens.push_back(line);
+
+        if (inQuote) {
+            if (c == L'\\' && i + 1 < content.size() &&
+                (content[i + 1] == quoteChar || content[i + 1] == L'\\')) {
+                current += content[i + 1];
+                i += 2;
+                continue;
+            }
+            if (c == quoteChar) {
+                inQuote = false;
+                ++i;
+                continue;
+            }
+            current += c;
+            ++i;
+            continue;
+        }
+
+        if (c == L'"' || c == L'\'') {
+            inQuote = true;
+            quoteChar = c;
+            inToken = true;
+            ++i;
+            continue;
+        }
+
+        if (std::iswspace(c)) {
+            if (inToken) {
+                tokens.push_back(current);
+                current.clear();
+                inToken = false;
+            }
+            ++i;
+            continue;
+        }
+
+        current += c;
+        inToken = true;
+        ++i;
     }
+
+    if (inToken) tokens.push_back(current);
     return tokens;
 }
 
@@ -181,10 +233,20 @@ std::vector<ClasspathFinding> ScanClasspath(uint32_t pid) {
     std::vector<std::wstring> tokens(argv, argv + argc);
     LocalFree(argv);
 
-    for (const auto& t : tokens) {
-        if (!t.empty() && t.front() == L'@') {
-            std::vector<std::wstring> fileTokens = ReadArgfileTokens(t.substr(1));
-            tokens.insert(tokens.end(), fileTokens.begin(), fileTokens.end());
+    // Index-based on purpose: growing `tokens` mid-loop (to expand a
+    // nested @argfile reference found inside another argfile) would be
+    // undefined behavior with a range-based for, since insert() can
+    // reallocate and invalidate the loop's cached iterators. The expansion
+    // cap guards against a self-referencing or maliciously crafted argfile
+    // causing unbounded growth.
+    constexpr size_t kMaxArgfileExpansions = 64;
+    size_t argfileExpansions = 0;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (!tokens[i].empty() && tokens[i].front() == L'@') {
+            if (++argfileExpansions > kMaxArgfileExpansions) break;
+            std::vector<std::wstring> fileTokens = ReadArgfileTokens(tokens[i].substr(1));
+            tokens.insert(tokens.begin() + static_cast<ptrdiff_t>(i) + 1,
+                fileTokens.begin(), fileTokens.end());
         }
     }
 

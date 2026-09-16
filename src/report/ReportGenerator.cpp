@@ -52,6 +52,46 @@ bool IsPcBypassDetection(const std::string& message) {
     return lower.find("(bypass method)") != std::string::npos;
 }
 
+bool HasTag(const std::string& message, const char* tag) {
+    std::string lower = message;
+    for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    return lower.find(tag) != std::string::npos;
+}
+
+// Reports get shared (screenshots, pasted into Discord, etc.) - strip the
+// actual Windows account name out of any path shown, so a shared report
+// doesn't leak who was scanned.
+std::string RedactUsername(const std::string& s) {
+    std::string lower = s;
+    for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+
+    const std::string marker = "\\users\\";
+    std::string out;
+    out.reserve(s.size());
+
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t found = lower.find(marker, pos);
+        if (found == std::string::npos) {
+            out += s.substr(pos);
+            break;
+        }
+        const size_t userStart = found + marker.size();
+        size_t userEnd = s.find_first_of("\\/", userStart);
+        if (userEnd == std::string::npos) userEnd = s.size();
+
+        if (userEnd > userStart) {
+            out += s.substr(pos, userStart - pos);
+            out += "<redacted>";
+            pos = userEnd;
+        } else {
+            out += s.substr(pos, userStart - pos);
+            pos = userStart;
+        }
+    }
+    return out;
+}
+
 static std::string EscapeHtml(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 16);
@@ -154,19 +194,21 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         else if (d.severity == scanner::Severity::Warning) categoryClass = "cat-warning";
         else                                               categoryClass = "cat-suspicious";
 
+        const std::string displayMsg = RedactUsername(d.message);
+
         std::ostringstream row;
         row << "<div class='log-row " << SeverityClass(d.severity) << " " << categoryClass << "'"
             << " data-id='" << detectionId << "'"
             << " data-sev='" << SeverityClass(d.severity) << "'"
             << " data-hits='" << d.totalHits << "'"
             << " data-time='" << EscapeHtml(d.timestamp) << "'"
-            << " data-msg='" << EscapeHtml(d.message) << "'"
+            << " data-msg='" << EscapeHtml(displayMsg) << "'"
             << " data-addr='" << ToHex(d.address) << "'"
             << " data-base='" << ToHex(d.baseAddress) << "'"
             << " data-all-addrs='" << EscapeHtml(JoinAddresses(d.hitAddresses)) << "'>"
             << "<span class='time'>[" << EscapeHtml(d.timestamp) << "]</span>"
             << "<span class='dot'></span>"
-            << "<span class='msg'>" << EscapeHtml(d.message) << " (" << d.totalHits << " times)</span>"
+            << "<span class='msg'>" << EscapeHtml(displayMsg) << " (" << d.totalHits << " times)</span>"
             << "</div>\n";
 
         if (d.severity == scanner::Severity::Detect) detectsRows << row.str();
@@ -180,7 +222,7 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         for (auto& ch : low) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
         if (low.find("doomsday") != std::string::npos) {
             highlights << "<div class='critical'><div class='critical-title'>Doomsday Found</div><div class='critical-body'>"
-                       << EscapeHtml(d.message) << "</div></div>\n";
+                       << EscapeHtml(displayMsg) << "</div></div>\n";
         }
         ++detectionId;
     }
@@ -200,6 +242,57 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         if (IsSystemIntegrityDetection(d.message)) systemIntegrityCount += d.totalHits;
     }
     int warningCountExcludingBypass = std::max<int>(0, static_cast<int>(summary.warningCount) - bypassCount);
+
+    // Evidence correlation: count how many INDEPENDENT categories of
+    // signal fired, rather than presenting any single one (a generic
+    // string match, a stopped service, a missing log, a recently-touched
+    // file) as a verdict on its own. Each of these represents a different
+    // technique/data source, so several corroborating hits carries far
+    // more weight than one.
+    struct EvidenceCategory { const char* label; const char* tag; bool present; };
+    std::vector<EvidenceCategory> categories = {
+        {"Memory signature match", nullptr, false},
+        {"Classpath", "(classpath)", false},
+        {"PC Bypass Method", "(bypass method)", false},
+        {"System Integrity", nullptr, false}, // matched via IsSystemIntegrityDetection() below, not a plain tag
+        {"Module Trust", "(module trust)", false},
+        {"PE Header", "(pe header)", false},
+        {"Hidden Payload", "(hidden payload)", false},
+        {"Prefetch", "(prefetch)", false},
+        {"External Tool", "(external tool)", false},
+        {"Java Agent", "(java agent)", false},
+        {"JVM Launch Flag", nullptr, false},
+    };
+    for (const auto& d : sortedDetections) {
+        if (IsBypassDetection(d.message)) { categories[10].present = true; continue; }
+        bool tagged = false;
+        if (IsSystemIntegrityDetection(d.message)) {
+            categories[3].present = true; // covers both "(System Integrity)" and "(System Tampering)"
+            tagged = true;
+        }
+        for (size_t ci = 1; ci < categories.size() - 1; ++ci) {
+            if (ci == 3) continue; // handled above via IsSystemIntegrityDetection
+            if (categories[ci].tag && HasTag(d.message, categories[ci].tag)) {
+                categories[ci].present = true;
+                tagged = true;
+            }
+        }
+        if (!tagged) categories[0].present = true; // raw memory-signature hit, no category tag
+    }
+    int categoriesPresent = 0;
+    std::ostringstream evidenceRows;
+    for (const auto& cat : categories) {
+        if (cat.present) ++categoriesPresent;
+        evidenceRows << "<div class='ev-row" << (cat.present ? " ev-hit" : "") << "'>"
+                     << "<span class='ev-dot'></span><span>" << cat.label << "</span>"
+                     << "<span class='ev-state'>" << (cat.present ? "signal present" : "clean") << "</span>"
+                     << "</div>\n";
+    }
+
+    std::ostringstream notesRows;
+    for (const auto& note : summary.scanNotes) {
+        notesRows << "<div class='note-row'>" << EscapeHtml(RedactUsername(note)) << "</div>\n";
+    }
 
     const std::string html =
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>"
@@ -275,6 +368,16 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         ".detail-v{font-size:13px;color:#e8e8f0;word-break:break-word;}"
         ".detail-box{margin-top:10px;border:1px solid rgba(255,255,255,.14);background:rgba(16,16,16,.55);border-radius:12px;padding:12px;}"
         ".footer{position:fixed;right:22px;bottom:18px;color:rgba(200,200,220,.75);font-size:12px;z-index:3;}"
+        "details.evidence-panel,details.notes-panel{border:1px solid rgba(255,255,255,.14);background:rgba(14,14,14,.65);border-radius:12px;padding:10px 14px;}"
+        "details.evidence-panel summary,details.notes-panel summary{cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:700;list-style:none;}"
+        "details.evidence-panel summary::-webkit-details-marker,details.notes-panel summary::-webkit-details-marker{display:none;}"
+        "details[open] summary{margin-bottom:8px;}"
+        ".ev-row{display:flex;align-items:center;gap:8px;padding:5px 2px;font-size:12.5px;color:var(--muted);}"
+        ".ev-row.ev-hit{color:var(--text);}"
+        ".ev-dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.18);flex-shrink:0;}"
+        ".ev-row.ev-hit .ev-dot{background:var(--yellow);box-shadow:0 0 10px rgba(200,180,60,.5);}"
+        ".ev-state{margin-left:auto;font-size:11px;opacity:.8;}"
+        ".note-row{padding:4px 2px;font-size:12px;color:var(--muted);font-family:Consolas,ui-monospace,Menlo,monospace;word-break:break-all;}"
         "</style></head><body>"
         "<canvas id='bg'></canvas><div class='vignette'></div>"
         "<div class='app'>"
@@ -302,6 +405,16 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         "<div class='meta'>PID " + std::to_string(summary.pid) + " • Scan " + EscapeHtml(summary.scanType) + "</div>"
         "</div>"
         + highlights.str() +
+        "<details class='evidence-panel'><summary>Evidence Summary — " + std::to_string(categoriesPresent) +
+        " of " + std::to_string(categories.size()) + " independent categories show a signal "
+        "(a correlation summary, not an automatic verdict — review the details below)</summary>" +
+        evidenceRows.str() + "</details>" +
+        "<details class='notes-panel'><summary>Scan Notes (" + std::to_string(summary.scanNotes.size()) +
+        ") — memory that couldn't be read, and any rule category with nothing loaded</summary>" +
+        (summary.scanNotes.empty()
+            ? "<div class='note-row'>None — every readable region was fully scanned.</div>"
+            : notesRows.str()) +
+        "</details>" +
         "<div class='logs' id='logs_detects'>" + detectsRows.str() + "</div>"
         "<div class='logs' id='logs_system' style='display:none'>" + systemIntegrityRows.str() + "</div>"
         "<div class='logs' id='logs_pcbypass' style='display:none'>" + pcBypassRows.str() + "</div>"

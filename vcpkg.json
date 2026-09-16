@@ -1,13 +1,11 @@
 {
   "name": "zeezy-cheat-scanner",
-  "version-string": "1.0.0",
+  "version-string": "1.0.3",
   "dependencies": [
     {
       "name": "imgui",
       "features": ["glfw-binding", "opengl3-binding"]
     },
-    "glfw3",
-    "curl",
-    "nlohmann-json"
+    "glfw3"
   ]
 }

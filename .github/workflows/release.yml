@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -31,15 +33,36 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           Copy-Item "build/Release/Zeezy Cheat Scanner.exe" "artifact/Zeezy Cheat Scanner.exe"
 
+      - name: Publish build provenance attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "artifact/Zeezy Cheat Scanner.exe"
+
+      - name: Compute SHA-256
+        run: |
+          $hash = (Get-FileHash "artifact/Zeezy Cheat Scanner.exe" -Algorithm SHA256).Hash
+          "$hash  Zeezy Cheat Scanner.exe" | Out-File -FilePath "artifact/Zeezy Cheat Scanner.exe.sha256" -Encoding ascii -NoNewline
+          Write-Host "SHA-256: $hash"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: zeezy-cheat-scanner
-          path: "artifact/Zeezy Cheat Scanner.exe"
+          path: |
+            artifact/Zeezy Cheat Scanner.exe
+            artifact/Zeezy Cheat Scanner.exe.sha256
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: "artifact/Zeezy Cheat Scanner.exe"
+          files: |
+            artifact/Zeezy Cheat Scanner.exe
+            artifact/Zeezy Cheat Scanner.exe.sha256
           generate_release_notes: true
+          body: |
+            SHA-256 checksum and [build provenance attestation](https://github.com/${{ github.repository }}/attestations) are published alongside this release. Verify with:
+
+            ```
+            gh attestation verify "Zeezy Cheat Scanner.exe" --repo ${{ github.repository }}
+            ```

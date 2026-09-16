@@ -30,7 +30,7 @@ std::string FormatTime(const FILETIME& ft) {
 
 }
 
-std::vector<ProcessInfo> EnumerateJavawProcesses() {
+std::vector<ProcessInfo> EnumerateMinecraftJavaProcesses() {
     std::vector<ProcessInfo> out;
 
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -43,7 +43,8 @@ std::vector<ProcessInfo> EnumerateJavawProcesses() {
 
     if (Process32FirstW(snap, &entry)) {
         do {
-            if (_wcsicmp(entry.szExeFile, L"javaw.exe") != 0) {
+            if (_wcsicmp(entry.szExeFile, L"javaw.exe") != 0 &&
+                _wcsicmp(entry.szExeFile, L"java.exe") != 0) {
                 continue;
             }
 

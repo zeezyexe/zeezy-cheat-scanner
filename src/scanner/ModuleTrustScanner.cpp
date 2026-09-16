@@ -164,9 +164,22 @@ std::vector<ModuleTrustFinding> ScanModuleTrust(uint32_t pid) {
                     "Loaded from an unexpected location and not verifiably signed: " + NarrowAscii(modulePath),
                     Severity::Detect});
             }
+        } else if (trust != TrustResult::Trusted) {
+            // Don't silently trust a whole directory: an unsigned DLL
+            // dropped into the game/mods folder to blend in looks
+            // identical to a legitimate unsigned native library (LWJGL,
+            // JNA, etc.) from location alone. Report it, but at a lower
+            // severity than the "wrong location entirely" case, since
+            // unsigned-but-in-the-right-place genuinely is the normal
+            // case for most such libraries - this is a note for review,
+            // not a verdict.
+            findings.push_back({moduleName,
+                "In a known game/launcher directory but not verifiably signed: " + NarrowAscii(modulePath),
+                Severity::Suspicious});
         }
-        // known location + unsigned/trusted -> not flagged; this is the
-        // normal case for most legitimate JVM native libraries.
+        // known location + validly signed -> not flagged; a vendor
+        // signature on a file sitting where it's expected to be is as
+        // close to a positive signal as this scan can produce.
     } while (Module32NextW(snap, &entry));
 
     CloseHandle(snap);

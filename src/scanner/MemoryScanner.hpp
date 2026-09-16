@@ -38,6 +38,11 @@ struct ScanSummary {
     std::size_t detectCount{0};
     std::size_t warningCount{0};
     std::size_t suspiciousCount{0};
+    // Operational notes: memory regions that couldn't be fully read,
+    // scan categories with no rules loaded, etc. - distinct from actual
+    // findings, so a report can show what the scan *couldn't* check
+    // rather than silently treating gaps as a clean result.
+    std::vector<std::string> scanNotes;
 };
 
 class MemoryScanner {

@@ -3,6 +3,7 @@
 #include "scanner/BypassScanner.hpp"
 #include "scanner/ClasspathScanner.hpp"
 #include "scanner/ExternalToolScanner.hpp"
+#include "scanner/HiddenPayloadScanner.hpp"
 #include "scanner/ModuleTrustScanner.hpp"
 #include "scanner/PEIntegrityScanner.hpp"
 #include "scanner/PrefetchScanner.hpp"
@@ -31,7 +32,11 @@
 
 namespace scanner {
 
-using HitFn = std::function<void(int)>;
+// endPos is the index of the LAST byte of the match within the searched
+// buffer (0-based), so callers can recover both the match's start offset
+// (endPos - patternLength + 1) and, when the buffer maps 1:1 to memory,
+// its real address.
+using HitFn = std::function<void(int patternIndex, size_t endPos)>;
 
 struct AhoCorasick {
     struct State {
@@ -94,7 +99,7 @@ struct AhoCorasick {
             cur = states[cur].next[static_cast<unsigned char>(buf[i])];
             if (!states[cur].output.empty()) {
                 for (int idx : states[cur].output) {
-                    hit(idx);
+                    hit(idx, i);
                     any = true;
                 }
             }
@@ -1105,6 +1110,33 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
         }
     }
 
+    // Java strings are stored as UTF-16 in memory - on Java 8 (still
+    // required by many Minecraft versions, e.g. 1.8.9) *every* String
+    // object is UTF-16 regardless of content, and even on newer JVMs with
+    // "compact strings" a char[] buffer or a String touching any non-
+    // Latin-1 character falls back to UTF-16. Scanning only raw ASCII
+    // bytes misses all of that, so mirror every pure-ASCII pattern as its
+    // UTF-16LE encoding and search for both.
+    {
+        const size_t asciiOnlyCount = compiled.size();
+        for (size_t i = 0; i < asciiOnlyCount; ++i) {
+            const std::string& low = compiled[i].lowered;
+            bool pureAscii = !low.empty();
+            for (unsigned char c : low) {
+                if (c >= 0x80) { pureAscii = false; break; }
+            }
+            if (!pureAscii) continue;
+
+            std::string utf16le;
+            utf16le.reserve(low.size() * 2);
+            for (unsigned char c : low) {
+                utf16le += static_cast<char>(c);
+                utf16le += '\0';
+            }
+            compiled.push_back({compiled[i].original + " (UTF-16)", utf16le, compiled[i].severity, utf16le[0]});
+        }
+    }
+
     struct MemoryRegion {
         uintptr_t baseAddress;
         size_t size;
@@ -1117,7 +1149,8 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
         if (VirtualQueryEx(process, reinterpret_cast<LPCVOID>(addr), &info, sizeof(info)) != sizeof(info)) {
             break;
         }
-        if (info.State == MEM_COMMIT && IsReadableProtection(info.Protect) && info.Type == MEM_PRIVATE) {
+        const bool scannableType = info.Type == MEM_PRIVATE || info.Type == MEM_MAPPED || info.Type == MEM_IMAGE;
+        if (info.State == MEM_COMMIT && IsReadableProtection(info.Protect) && scannableType) {
             regions.push_back({reinterpret_cast<uintptr_t>(info.BaseAddress), info.RegionSize});
             totalBytes += static_cast<double>(info.RegionSize);
         }
@@ -1142,9 +1175,21 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
     std::atomic<double> doneBytes{0.0};
 
     AhoCorasick ac;
-    for (size_t i = 0; i < compiled.size(); i++)
+    size_t maxPatternLen = 0;
+    for (size_t i = 0; i < compiled.size(); i++) {
         ac.AddPattern(compiled[i].lowered, static_cast<int>(i));
+        maxPatternLen = std::max(maxPatternLen, compiled[i].lowered.size());
+    }
     ac.Build();
+
+    // A signature can straddle the boundary between two chunk reads.
+    // Carry the tail end of each chunk forward and prepend it to the next
+    // one so cross-boundary matches aren't missed; anything whose match
+    // ends inside that carried-over tail was already reported in the
+    // previous chunk's search, so it's skipped to avoid double-counting.
+    const size_t overlapLen = maxPatternLen > 0
+        ? std::min(maxPatternLen - 1, config.chunkSize / 2)
+        : 0;
 
     std::atomic<size_t> nextRegion{0};
 
@@ -1153,9 +1198,9 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
 
         std::vector<char> buffer(config.chunkSize);
         std::string lowerChunk;
-        std::string normalizedChunk;
+        std::string combinedRaw;
+        std::string combinedNormalized;
         lowerChunk.reserve(config.chunkSize);
-        normalizedChunk.reserve(config.chunkSize);
 
         std::vector<bool> hitFlags(compiled.size(), false);
 
@@ -1166,42 +1211,56 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
             const auto& region = regions[idx];
             uintptr_t regionAddr = region.baseAddress;
             size_t remaining = region.size;
+            std::string overlapTail; // reset per region: regions aren't contiguous with each other
 
             while (remaining > 0 && !m_cancel.load()) {
                 size_t toRead = std::min(config.chunkSize, remaining);
                 SIZE_T bytesRead = 0;
-
-                if (ReadProcessMemory(process,
+                const BOOL readOk = ReadProcessMemory(process,
                     reinterpret_cast<LPCVOID>(regionAddr),
-                    buffer.data(), toRead, &bytesRead) && bytesRead > 0) {
+                    buffer.data(), toRead, &bytesRead);
 
+                if (readOk && bytesRead > 0) {
                     lowerChunk.resize(bytesRead);
                     for (SIZE_T i = 0; i < bytesRead; ++i)
                         lowerChunk[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(buffer[i])));
 
-                    normalizedChunk = NormalizeFullwidthUnicode(lowerChunk);
+                    const size_t rawCutoff = overlapTail.size();
+                    combinedRaw = overlapTail + lowerChunk;
 
                     std::fill(hitFlags.begin(), hitFlags.end(), false);
 
-                    ac.Search(lowerChunk.data(), lowerChunk.size(), [&](int i) {
-                        if (!hitFlags[i]) {
+                    ac.Search(combinedRaw.data(), combinedRaw.size(), [&](int i, size_t endPos) {
+                        if (endPos < rawCutoff) return; // already reported by the previous chunk
+                        if (hitFlags[i]) return;
+                        hitFlags[i] = true;
+                        const size_t patLen = compiled[i].lowered.size();
+                        const uintptr_t matchAddr =
+                            regionAddr - static_cast<uintptr_t>(rawCutoff) +
+                            static_cast<uintptr_t>(endPos - patLen + 1);
+                        RegisterDetection(localSummary,
+                            compiled[i].original + " Found",
+                            compiled[i].severity,
+                            matchAddr, region.baseAddress);
+                    });
+
+                    combinedNormalized = NormalizeFullwidthUnicode(combinedRaw);
+                    if (combinedRaw != combinedNormalized) {
+                        // Normalization can change buffer length (fullwidth
+                        // sequences collapse to one byte), so byte offsets
+                        // no longer map 1:1 to memory addresses here -
+                        // report the chunk's base address for these hits
+                        // rather than an offset we can't reconstruct exactly.
+                        const std::string normalizedTail = NormalizeFullwidthUnicode(overlapTail);
+                        const size_t normalizedCutoff = normalizedTail.size();
+                        ac.Search(combinedNormalized.data(), combinedNormalized.size(), [&](int i, size_t endPos) {
+                            if (endPos < normalizedCutoff) return;
+                            if (hitFlags[i]) return;
                             hitFlags[i] = true;
                             RegisterDetection(localSummary,
                                 compiled[i].original + " Found",
                                 compiled[i].severity,
                                 regionAddr, region.baseAddress);
-                        }
-                    });
-
-                    if (lowerChunk != normalizedChunk) {
-                        ac.Search(normalizedChunk.data(), normalizedChunk.size(), [&](int i) {
-                            if (!hitFlags[i]) {
-                                hitFlags[i] = true;
-                                RegisterDetection(localSummary,
-                                    compiled[i].original + " Found",
-                                    compiled[i].severity,
-                                    regionAddr, region.baseAddress);
-                            }
                         });
                     }
 
@@ -1211,12 +1270,33 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
                         RegisterDetection(localSummary, "Client mixin JSON file Found", Severity::Suspicious,
                             regionAddr, region.baseAddress);
                     }
+
+                    overlapTail = lowerChunk.size() >= overlapLen
+                        ? lowerChunk.substr(lowerChunk.size() - overlapLen)
+                        : lowerChunk;
+
+                    if (bytesRead < toRead) {
+                        std::ostringstream note;
+                        note << "Partial read at 0x" << std::hex << regionAddr << std::dec
+                             << " (" << bytesRead << " of " << toRead << " bytes)";
+                        localSummary.scanNotes.push_back(note.str());
+                    }
+
+                    regionAddr += bytesRead;
+                    remaining -= bytesRead;
+                    doneBytes.fetch_add(static_cast<double>(bytesRead), std::memory_order_relaxed);
+                } else {
+                    std::ostringstream o;
+                    o << "Could not read memory at 0x" << std::hex << regionAddr
+                      << " (" << std::dec << toRead << " bytes requested)";
+                    localSummary.scanNotes.push_back(o.str());
+
+                    overlapTail.clear();
+                    regionAddr += toRead;
+                    remaining -= toRead;
+                    doneBytes.fetch_add(static_cast<double>(toRead), std::memory_order_relaxed);
                 }
 
-                regionAddr += toRead;
-                remaining -= toRead;
-
-                doneBytes.fetch_add(static_cast<double>(toRead), std::memory_order_relaxed);
                 const double p = doneBytes.load(std::memory_order_relaxed) / totalBytes;
                 m_progress.store(static_cast<float>(std::clamp(p, 0.0, 1.0)));
             }
@@ -1239,30 +1319,40 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
             threadSummaries[i].detections.begin(),
             threadSummaries[i].detections.end()
         );
+        finalSummary.scanNotes.insert(
+            finalSummary.scanNotes.end(),
+            threadSummaries[i].scanNotes.begin(),
+            threadSummaries[i].scanNotes.end()
+        );
     }
 
-    for (const auto& d : finalSummary.detections) {
-        if (d.severity == Severity::Detect) {
-            finalSummary.detectCount += d.hits;
-        } else if (d.severity == Severity::Warning) {
-            finalSummary.warningCount += d.hits;
-        } else {
-            finalSummary.suspiciousCount += d.hits;
-        }
-    }
+    std::string cmdLine = ReadJvmCommandLine(process);
+    if (!cmdLine.empty()) {
+        std::string cmdLineLower = cmdLine;
+        for (auto& c : cmdLineLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    {
-        std::string cmdLine = ReadJvmCommandLine(process);
-        if (!cmdLine.empty()) {
-            std::string cmdLineLower = cmdLine;
-            for (auto& c : cmdLineLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-
-            for (const auto& sig : kJVMInjectionDetections) {
-                std::string sigLower = ToLower(sig);
-                if (cmdLineLower.find(sigLower) != std::string::npos) {
-                    RegisterDetection(finalSummary, sig, Severity::Warning, 0, 0);
-                }
+        for (const auto& sig : kJVMInjectionDetections) {
+            std::string sigLower = ToLower(sig);
+            if (cmdLineLower.find(sigLower) != std::string::npos) {
+                RegisterDetection(finalSummary, sig, Severity::Warning, 0, 0);
             }
+        }
+
+        // A -javaagent flag loads a Java agent jar into the JVM before
+        // main() runs - a legitimate mechanism (profilers, APM tools) that
+        // an injected client can equally use to bootstrap itself. Report
+        // its presence; whether it's benign or not needs a human look.
+        const std::string agentFlag = "-javaagent:";
+        size_t pos = cmdLineLower.find(agentFlag);
+        while (pos != std::string::npos) {
+            size_t valueStart = pos + agentFlag.size();
+            size_t valueEnd = cmdLine.find_first_of(" \t", valueStart);
+            if (valueEnd == std::string::npos || valueEnd - valueStart > 512) {
+                valueEnd = std::min(cmdLine.size(), valueStart + 512);
+            }
+            const std::string agentPath = cmdLine.substr(valueStart, valueEnd - valueStart);
+            RegisterDetection(finalSummary, "-javaagent: " + agentPath + " (Java Agent)", Severity::Warning, 0, 0);
+            pos = cmdLineLower.find(agentFlag, valueEnd);
         }
     }
 
@@ -1291,6 +1381,11 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
             finding.severity, 0, 0);
     }
 
+    for (const auto& finding : ScanForHiddenPayloads(pid)) {
+        RegisterDetection(finalSummary, finding.moduleName + ": " + finding.detail + " (Hidden Payload)",
+            finding.severity, 0, 0);
+    }
+
     for (const auto& finding : ScanPrefetchForKnownTools()) {
         RegisterDetection(finalSummary,
             finding.matchedTool + " found in Prefetch (" + finding.prefetchFile + ") (Prefetch)",
@@ -1301,6 +1396,37 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
         RegisterDetection(finalSummary,
             finding.processName + " running (pid " + std::to_string(finding.pid) + ") (External Tool)",
             finding.severity, 0, 0);
+    }
+
+    {
+        struct RuleCategory { const char* label; size_t count; };
+        const RuleCategory categories[] = {
+            {"Red (disallowed mod) signatures", kRedDetections.size()},
+            {"Yellow (generic cheat) signatures", kYellowDetections.size()},
+            {"Fullwidth-obfuscated signatures", kFullwidthObfuscatedCheats.size()},
+            {"JVM injection flag signatures", kJVMInjectionDetections.size()},
+            {"DNS/domain signatures", kDNSCacheDetections.size()},
+            {"Client signature groups", kClientSignatureGroups.size()},
+        };
+        for (const auto& cat : categories) {
+            if (cat.count == 0) {
+                finalSummary.scanNotes.push_back(
+                    std::string("No rules loaded for: ") + cat.label + " - this category can't detect anything until it's populated");
+            }
+        }
+    }
+
+    // Detection totals must be computed after every category above has
+    // finished registering findings - computing them earlier silently
+    // undercounts everything added afterward.
+    for (const auto& d : finalSummary.detections) {
+        if (d.severity == Severity::Detect) {
+            finalSummary.detectCount += d.hits;
+        } else if (d.severity == Severity::Warning) {
+            finalSummary.warningCount += d.hits;
+        } else {
+            finalSummary.suspiciousCount += d.hits;
+        }
     }
 
     m_summary = std::move(finalSummary);

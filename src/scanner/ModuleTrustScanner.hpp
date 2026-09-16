@@ -21,12 +21,15 @@ struct ModuleTrustFinding {
 // signature.
 //
 // A DLL that is both outside any expected location AND unsigned/
-// invalidly-signed is the strongest signal of an injected payload; a
-// signature that is actively invalid/tampered is flagged regardless of
-// location. An unsigned DLL that DOES live somewhere expected is not
-// flagged at all - most legitimate JVM native libraries (LWJGL, JNA,
-// etc.) are routinely unsigned, so flagging on that alone would be
-// noise, not signal.
+// invalidly-signed is the strongest signal of an injected payload
+// (Severity::Detect); a signature that is actively invalid/tampered is
+// flagged the same way regardless of location. An unsigned DLL that DOES
+// live somewhere expected is still reported, just at a lower severity
+// (Severity::Suspicious) - most legitimate JVM native libraries (LWJGL,
+// JNA, etc.) are routinely unsigned, but a directory isn't trusted
+// outright just because it's the game's own folder, since an unsigned
+// cheat dropped there looks identical from location alone. Only a
+// validly-signed module in an expected location is left unflagged.
 //
 // Windows system directories (System32/SysWOW64) are skipped entirely:
 // compromised OS-level DLLs are a different threat model than an

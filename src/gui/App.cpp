@@ -104,14 +104,14 @@ void JavaApp::Shutdown() {
 }
 
 void JavaApp::RefreshProcesses() {
-    m_processes = scanner::EnumerateJavawProcesses();
+    m_processes = scanner::EnumerateMinecraftJavaProcesses();
     if (m_selectedProcess >= static_cast<int>(m_processes.size()))
         m_selectedProcess = -1;
 }
 
 void JavaApp::StartScan() {
     if (m_selectedProcess < 0 || m_selectedProcess >= static_cast<int>(m_processes.size())) {
-        m_lastError = "No javaw.exe process selected.";
+        m_lastError = "No java.exe/javaw.exe process selected.";
         return;
     }
     m_lastError.clear();
@@ -255,7 +255,7 @@ void JavaApp::DrawMainWindow(float dt) {
     {
         ImGui::SetWindowFontScale(1.10f);
         char headerText[128]{};
-        sprintf_s(headerText, "Javaw Processes (%zu)", m_processes.size());
+        sprintf_s(headerText, "Java Processes (%zu)", m_processes.size());
         const ImVec2 ts = ImGui::CalcTextSize(headerText);
         ImGui::SetCursorPos(ImVec2((cardSz.x - ts.x * 1.10f) * 0.5f, 8.0f));
         ImGui::TextColored(ImVec4(0.92f, 0.92f, 0.99f, 1.0f), "%s", headerText);
