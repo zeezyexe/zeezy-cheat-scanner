@@ -1,6 +1,6 @@
 {
-  "name": "zeezy-cheat-scanner",
-  "version-string": "1.0.3",
+  "name": "daxy-cheat-scanner",
+  "version-string": "1.0.4",
   "dependencies": [
     {
       "name": "imgui",

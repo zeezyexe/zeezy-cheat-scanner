@@ -2,6 +2,7 @@
 
 #include "gui/Theme.hpp"
 #include "report/ReportGenerator.hpp"
+#include "version.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -56,7 +57,7 @@ bool JavaApp::Initialize() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
 
-    m_window = glfwCreateWindow(kWinW, kWinH, "Zeezy Cheat Scanner", nullptr, nullptr);
+    m_window = glfwCreateWindow(kWinW, kWinH, "Daxy Cheat Scanner", nullptr, nullptr);
     if (!m_window) return false;
 
     if (GLFWmonitor* primary = glfwGetPrimaryMonitor()) {
@@ -170,10 +171,10 @@ void JavaApp::DrawTitleBar() {
     const ImVec2 wp = ImGui::GetWindowPos();
 
     ImGui::SetCursorPos(ImVec2(10.0f, 7.0f));
-    ImGui::TextColored(ImVec4(0.45f, 0.44f, 0.54f, 1.0f), "v1.9");
+    ImGui::TextColored(ImVec4(0.45f, 0.44f, 0.54f, 1.0f), DAXY_VERSION_STRING);
 
     ImGui::SetWindowFontScale(1.06f);
-    const char*  title = "Zeezy Cheat Scanner";
+    const char*  title = "Daxy Cheat Scanner";
     const ImVec2 ts    = ImGui::CalcTextSize(title);
     ImGui::SetCursorPos(ImVec2((ws.x - ts.x) * 0.5f, 7.0f));
     ImGui::TextColored(ImVec4(0.92f, 0.92f, 0.99f, 1.0f), "%s", title);
@@ -271,6 +272,14 @@ void JavaApp::DrawMainWindow(float dt) {
         ImGui::TableSetupColumn("Memory",     ImGuiTableColumnFlags_WidthStretch, 0.30f);
         ImGui::TableSetupColumn("Start Time", ImGuiTableColumnFlags_WidthStretch, 0.44f);
         ImGui::TableHeadersRow();
+
+        if (m_processes.empty()) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.58f, 1.0f));
+            ImGui::TextUnformatted("No java.exe/javaw.exe process found - launch the game, then Refresh.");
+            ImGui::PopStyleColor();
+        }
 
         for (std::size_t i = 0; i < m_processes.size(); ++i) {
             const auto& proc = m_processes[i];
@@ -408,7 +417,7 @@ void JavaApp::DrawScanningWindow(float dt) {
     }
 
     {
-        const char*  n  = "Zeezy Cheat Scanner";
+        const char*  n  = "Daxy Cheat Scanner";
         const ImVec2 ts = ImGui::CalcTextSize(n);
         ImGui::SetCursorPos(ImVec2((ws.x - ts.x) * 0.5f, cTL.y + 8.0f));
         ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.96f, 0.92f), "%s", n);

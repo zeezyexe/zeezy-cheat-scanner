@@ -20,6 +20,17 @@ std::wstring ToLowerW(std::wstring s) {
     return s;
 }
 
+// Java accepts (and several real-world launchers, PrismLauncher included,
+// actually emit) forward slashes in the classpath even on Windows. The
+// location markers below are all backslash-delimited, so without this every
+// classpath entry from such a launcher would fail every marker check and
+// get flagged as "unknown location" - not because it's suspicious, but
+// because of a separator mismatch.
+std::wstring NormalizeSeparators(std::wstring s) {
+    for (auto& c : s) if (c == L'/') c = L'\\';
+    return s;
+}
+
 std::string NarrowAscii(const std::wstring& w) {
     std::string out;
     out.reserve(w.size());

@@ -74,6 +74,12 @@ const std::vector<std::wstring>& KnownGoodPathMarkers() {
         L"\\atlauncher\\", L"\\the feed the beast\\", L"\\.technic\\",
         L"\\curseforge\\minecraft\\", L"\\gdlauncher_next\\", L"\\tlauncher\\",
         L"\\.lunarclient\\", L"\\.badlion\\", L"\\modrinth\\", L"\\overwolf\\minecraft\\",
+        // LWJGL and JNA both extract their bundled native libraries to
+        // per-run/per-version subfolders of the system temp directory by
+        // default - standard, well-documented behavior for essentially
+        // every modern (LWJGL 3.x) Minecraft install and any JNA-using
+        // library (e.g. OSHI, used by Minecraft's own crash reporter).
+        L"\\appdata\\local\\temp\\lwjgl_", L"\\appdata\\local\\temp\\jna-",
     };
     return markers;
 }
@@ -102,6 +108,10 @@ SystemDirs QuerySystemDirs() {
 bool IsInWindowsSystemDirectory(const std::wstring& lowerPath, const SystemDirs& sysDirs) {
     if (!sysDirs.lowerSysDir.empty() && lowerPath.rfind(sysDirs.lowerSysDir, 0) == 0) return true;
     if (!sysDirs.lowerSysDirX86.empty() && lowerPath.rfind(sysDirs.lowerSysDirX86, 0) == 0) return true;
+    // WinSxS holds versioned, side-by-side system components (e.g. the
+    // Common Controls manifest-versioning mechanism every GUI app relies
+    // on) - as much a part of the OS as System32/SysWOW64.
+    if (lowerPath.find(L"\\windows\\winsxs\\") != std::wstring::npos) return true;
     return false;
 }
 
@@ -145,6 +155,15 @@ std::vector<ModuleTrustFinding> ScanModuleTrust(uint32_t pid) {
         }
 
         const bool knownLocation = IsInKnownGoodLocation(lowerPath, processDir);
+        // The JRE's own bin/lib folder (processDir) is a stricter case
+        // than "known location" in general: anything sitting there is,
+        // by construction, part of the very JVM currently running this
+        // process - required for it to have started at all. Third-party
+        // code (mods, cheats) lives in libraries/mods/config, not here,
+        // so an unsigned file specifically in processDir isn't flagged
+        // even when the bundled JDK itself ships unsigned (common for
+        // several OpenJDK redistributions).
+        const bool inProcessDir = !processDir.empty() && lowerPath.rfind(processDir, 0) == 0;
         const TrustResult trust = VerifyFileTrust(modulePath);
 
         if (trust == TrustResult::Invalid) {
@@ -155,16 +174,20 @@ std::vector<ModuleTrustFinding> ScanModuleTrust(uint32_t pid) {
         }
 
         if (!knownLocation) {
-            if (trust == TrustResult::Trusted) {
-                findings.push_back({moduleName,
-                    "Loaded from an unexpected location (signed): " + NarrowAscii(modulePath),
-                    Severity::Warning});
-            } else {
+            if (trust != TrustResult::Trusted) {
                 findings.push_back({moduleName,
                     "Loaded from an unexpected location and not verifiably signed: " + NarrowAscii(modulePath),
                     Severity::Detect});
             }
-        } else if (trust != TrustResult::Trusted) {
+            // Unexpected location but validly signed -> not flagged. A
+            // real Authenticode signature means a CA verified someone's
+            // identity to issue it; obtaining one is a real barrier a
+            // cheat author is very unlikely to cross, and legitimate
+            // gaming utilities (capture/overlay tools, anti-cheat
+            // engines, Defender's own hooks) routinely inject signed
+            // DLLs into games from locations this tool has no way to
+            // enumerate in advance.
+        } else if (trust != TrustResult::Trusted && !inProcessDir) {
             // Don't silently trust a whole directory: an unsigned DLL
             // dropped into the game/mods folder to blend in looks
             // identical to a legitimate unsigned native library (LWJGL,
@@ -177,9 +200,8 @@ std::vector<ModuleTrustFinding> ScanModuleTrust(uint32_t pid) {
                 "In a known game/launcher directory but not verifiably signed: " + NarrowAscii(modulePath),
                 Severity::Suspicious});
         }
-        // known location + validly signed -> not flagged; a vendor
-        // signature on a file sitting where it's expected to be is as
-        // close to a positive signal as this scan can produce.
+        // known location + validly signed, or unsigned but inside the
+        // JRE's own directory -> not flagged.
     } while (Module32NextW(snap, &entry));
 
     CloseHandle(snap);

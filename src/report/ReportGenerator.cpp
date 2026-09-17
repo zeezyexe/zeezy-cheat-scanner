@@ -52,6 +52,12 @@ bool IsPcBypassDetection(const std::string& message) {
     return lower.find("(bypass method)") != std::string::npos;
 }
 
+bool IsDistinctiveClientDetection(const std::string& message) {
+    std::string lower = message;
+    for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    return lower.find("(distinctive client)") != std::string::npos;
+}
+
 bool HasTag(const std::string& message, const char* tag) {
     std::string lower = message;
     for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
@@ -127,6 +133,7 @@ static std::string JoinAddresses(const std::vector<uintptr_t>& addresses) {
 
 std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::string& outPath) {
     std::ostringstream detectsRows;
+    std::ostringstream distinctiveClientRows;
     std::ostringstream bypassRows;
     std::ostringstream pcBypassRows;
     std::ostringstream warningRows;
@@ -187,7 +194,8 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
     int detectionId = 1;
     for (const auto& d : sortedDetections) {
         std::string categoryClass;
-        if (d.severity == scanner::Severity::Detect)      categoryClass = "cat-detect";
+        if (IsDistinctiveClientDetection(d.message))       categoryClass = "cat-distinctive";
+        else if (d.severity == scanner::Severity::Detect)  categoryClass = "cat-detect";
         else if (IsBypassDetection(d.message))             categoryClass = "cat-bypass";
         else if (IsPcBypassDetection(d.message))           categoryClass = "cat-pcbypass";
         else if (IsSystemIntegrityDetection(d.message))    categoryClass = "cat-system";
@@ -211,7 +219,8 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
             << "<span class='msg'>" << EscapeHtml(displayMsg) << " (" << d.totalHits << " times)</span>"
             << "</div>\n";
 
-        if (d.severity == scanner::Severity::Detect) detectsRows << row.str();
+        if (IsDistinctiveClientDetection(d.message)) distinctiveClientRows << row.str();
+        else if (d.severity == scanner::Severity::Detect) detectsRows << row.str();
         else if (IsBypassDetection(d.message)) bypassRows << row.str();
         else if (IsPcBypassDetection(d.message)) pcBypassRows << row.str();
         else if (d.severity == scanner::Severity::Warning) warningRows << row.str();
@@ -229,10 +238,12 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
 
     int bypassCount = 0;
     int pcBypassCount = 0;
+    int distinctiveClientCount = 0;
     int suspiciousCountExcludingSystem = 0;
     for (const auto& d : sortedDetections) {
         if (IsBypassDetection(d.message)) bypassCount += d.totalHits;
         if (IsPcBypassDetection(d.message)) pcBypassCount += d.totalHits;
+        if (IsDistinctiveClientDetection(d.message)) distinctiveClientCount += d.totalHits;
         if (d.severity == scanner::Severity::Suspicious && !IsSystemIntegrityDetection(d.message) &&
             !IsPcBypassDetection(d.message))
             suspiciousCountExcludingSystem += d.totalHits;
@@ -242,6 +253,8 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         if (IsSystemIntegrityDetection(d.message)) systemIntegrityCount += d.totalHits;
     }
     int warningCountExcludingBypass = std::max<int>(0, static_cast<int>(summary.warningCount) - bypassCount);
+    int detectCountExcludingDistinctive =
+        std::max<int>(0, static_cast<int>(summary.detectCount) - distinctiveClientCount);
 
     // Evidence correlation: count how many INDEPENDENT categories of
     // signal fired, rather than presenting any single one (a generic
@@ -261,10 +274,11 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         {"Prefetch", "(prefetch)", false},
         {"External Tool", "(external tool)", false},
         {"Java Agent", "(java agent)", false},
+        {"Distinctive Client", "(distinctive client)", false},
         {"JVM Launch Flag", nullptr, false},
     };
     for (const auto& d : sortedDetections) {
-        if (IsBypassDetection(d.message)) { categories[10].present = true; continue; }
+        if (IsBypassDetection(d.message)) { categories[11].present = true; continue; }
         bool tagged = false;
         if (IsSystemIntegrityDetection(d.message)) {
             categories[3].present = true; // covers both "(System Integrity)" and "(System Tampering)"
@@ -296,7 +310,7 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
 
     const std::string html =
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>"
-        "<title>Zeezy Cheat Scanner - Detection Results</title>"
+        "<title>Daxy Cheat Scanner - Detection Results</title>"
         "<style>"
         ":root{--bg0:#000000;--bg1:#0a0a0a;--glass:rgba(10,10,10,.88);--glass2:rgba(6,6,6,.82);"
         "--border:rgba(255,255,255,.25);--border2:rgba(255,255,255,.08);"
@@ -322,7 +336,7 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         ".tab .label{display:flex;align-items:center;gap:10px;font-size:13px;}"
         ".pill{min-width:34px;text-align:center;font-weight:800;border-radius:10px;padding:3px 8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);}"
         ".ico{width:10px;height:10px;border-radius:50%;}"
-        ".ico.detect{background:var(--red);}.ico.warning{background:var(--yellow);}.ico.suspicious{background:var(--blue);}.ico.system{background:var(--green);}.ico.bypass{background:#9f7bff;}.ico.pcbypass{background:#e08a3c;}"
+        ".ico.detect{background:var(--red);}.ico.warning{background:var(--yellow);}.ico.suspicious{background:var(--blue);}.ico.system{background:var(--green);}.ico.bypass{background:#9f7bff;}.ico.pcbypass{background:#e08a3c;}.ico.distinctive{background:#ff2d55;}"
         ".main{flex:1;min-width:0;align-self:flex-start;height:max-content;padding:18px;display:flex;flex-direction:column;gap:10px;}"
         ".main-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}"
         ".main h2{margin:0;font-size:18px;letter-spacing:.2px;}"
@@ -355,6 +369,8 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         ".log-row.cat-system .dot{background:var(--green);box-shadow:0 0 18px rgba(60,190,100,.4);}"
         ".log-row.cat-bypass .dot{background:#9f7bff;box-shadow:0 0 18px rgba(159,123,255,.4);}"
         ".log-row.cat-pcbypass .dot{background:#e08a3c;box-shadow:0 0 18px rgba(224,138,60,.4);}"
+        ".log-row.cat-distinctive .dot{background:#ff2d55;box-shadow:0 0 18px rgba(255,45,85,.5);}"
+        ".log-row.cat-distinctive{border-color:rgba(255,45,85,.35);}"
         ".msg{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;}"
         ".critical{margin-top:8px;padding:14px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.22);background:linear-gradient(180deg, rgba(22,22,22,.92), rgba(12,12,12,.78));box-shadow:0 0 32px rgba(255,255,255,.06), inset 0 0 0 1px rgba(255,255,255,.06);}"
         ".critical-title{font-weight:900;color:#e8e8f8;letter-spacing:.7px;margin-bottom:6px;}"
@@ -383,15 +399,17 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         "<div class='app'>"
         "<div class='top'>"
         "<div class='top-left'>discord.gg/GkD535S2qh</div>"
-        "<div class='brand-center'>Zeezy Cheat Scanner</div>"
+        "<div class='brand-center'>Daxy Cheat Scanner</div>"
         "<div class='top-right'></div>"
         "</div>"
         "<div class='wrap'>"
         "<aside class='left card'>"
         "<h2>Detection Results</h2>"
-        "<div class='sub'>" + std::to_string(summary.detections.size()) + " events across 6 categories</div>"
+        "<div class='sub'>" + std::to_string(summary.detections.size()) + " events across 7 categories</div>"
         "<div class='tabs'>"
-        "<div class='tab active' data-tab='detects'><div class='label'><span class='ico detect'></span>Detects Logs</div><div class='pill'>" + std::to_string(summary.detectCount) + "</div></div>"
+        "<div class='tab' data-tab='distinctive' title='Matched a specific, verified cheat-client family - the strongest signal this scan produces. Still confirm the match yourself before acting on it: these clients are known to disguise themselves as real, popular mods with injected code, so a name alone is never enough.'>"
+        "<div class='label'><span class='ico distinctive'></span>Distinctive Clients</div><div class='pill'>" + std::to_string(distinctiveClientCount) + "</div></div>"
+        "<div class='tab active' data-tab='detects'><div class='label'><span class='ico detect'></span>Detects Logs</div><div class='pill'>" + std::to_string(detectCountExcludingDistinctive) + "</div></div>"
         "<div class='tab' data-tab='system'><div class='label'><span class='ico system'></span>System Integrity</div><div class='pill'>" + std::to_string(systemIntegrityCount) + "</div></div>"
         "<div class='tab' data-tab='pcbypass'><div class='label'><span class='ico pcbypass'></span>PC Bypass Methods</div><div class='pill'>" + std::to_string(pcBypassCount) + "</div></div>"
         "<div class='tab' data-tab='bypass'><div class='label'><span class='ico bypass'></span>Bypass Logs</div><div class='pill'>" + std::to_string(bypassCount) + "</div></div>"
@@ -415,6 +433,7 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
             ? "<div class='note-row'>None — every readable region was fully scanned.</div>"
             : notesRows.str()) +
         "</details>" +
+        "<div class='logs' id='logs_distinctive' style='display:none'>" + distinctiveClientRows.str() + "</div>"
         "<div class='logs' id='logs_detects'>" + detectsRows.str() + "</div>"
         "<div class='logs' id='logs_system' style='display:none'>" + systemIntegrityRows.str() + "</div>"
         "<div class='logs' id='logs_pcbypass' style='display:none'>" + pcBypassRows.str() + "</div>"
@@ -445,11 +464,11 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         "const title=document.getElementById('tabTitle');"
         "const detailPage=document.getElementById('detailPage');"
         "const backBtn=document.getElementById('backToLogs');"
-        "const logsByTab={detects:document.getElementById('logs_detects'),system:document.getElementById('logs_system'),pcbypass:document.getElementById('logs_pcbypass'),bypass:document.getElementById('logs_bypass'),warnings:document.getElementById('logs_warnings'),suspicious:document.getElementById('logs_suspicious')};"
+        "const logsByTab={distinctive:document.getElementById('logs_distinctive'),detects:document.getElementById('logs_detects'),system:document.getElementById('logs_system'),pcbypass:document.getElementById('logs_pcbypass'),bypass:document.getElementById('logs_bypass'),warnings:document.getElementById('logs_warnings'),suspicious:document.getElementById('logs_suspicious')};"
         "let activeTab='detects';"
         "function showLogsOnly(){detailPage.style.display='none';Object.keys(logsByTab).forEach(k=>{logsByTab[k].style.display=(k===activeTab)?'block':'none';});}"
         "function show(tab){activeTab=tab;tabs.forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));showLogsOnly();"
-        "title.textContent=tab==='detects'?'Detects Logs':tab==='system'?'System Integrity':tab==='pcbypass'?'PC Bypass Methods':tab==='bypass'?'Bypass Logs':tab==='warnings'?'Warnings Logs':'Suspicious Logs';}"
+        "title.textContent=tab==='distinctive'?'Distinctive Clients':tab==='detects'?'Detects Logs':tab==='system'?'System Integrity':tab==='pcbypass'?'PC Bypass Methods':tab==='bypass'?'Bypass Logs':tab==='warnings'?'Warnings Logs':'Suspicious Logs';}"
         "tabs.forEach(t=>t.addEventListener('click',()=>show(t.dataset.tab)));"
         "if(backBtn)backBtn.addEventListener('click',showLogsOnly);"
         "document.querySelectorAll('.log-row').forEach(row=>{row.addEventListener('click',()=>{"

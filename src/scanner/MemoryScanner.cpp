@@ -229,7 +229,6 @@ std::string NormalizeFullwidthUnicode(const std::string& str) {
 
 const std::vector<std::string> kRedDetections = {
     "arsenic.injection.accessor.IMixinS12PacketEntityVelocity",
-    "dev.lvstrng.argon.mixin.EndCrystalItemMixin",
     "ares-fabric-1.16.src.main.dev.tigr.ares.fabric.event.player.AntiHitboxEvent",
     "com.apollo.api.event.events.TotemPopEvent",
     "com.obamabob.apeclient.clickgui.windows.AuraSettings",
@@ -270,7 +269,6 @@ const std::vector<std::string> kRedDetections = {
     "Only Crit Axe",
     "Stop at Target Vert",
     "Stop at Target Horiz",
-    "ahc.class",
     "Anch0r Macr0",
     "L3g1t R3t0t3m",
     "Breaking shield with axe...",
@@ -330,11 +328,8 @@ const std::vector<std::string> kYellowDetections = {
     "After you move your mouse",
     "triggerbot",
     "killaura",
-    "selfdestruct",
-    "strafe",
     "pingspoof",
     "meteorclient",
-    "prestige",
     "s3lfd3struct",
     "playerreach",
     "jumpreset",
@@ -816,6 +811,34 @@ const std::vector<std::string> kDNSCacheDetections = {
     "doomsdayclient.com",
 };
 
+// High-confidence markers for specific known cheat-client families,
+// verified against real sample jars. Several of these clients ship as
+// trojanized copies of legitimate, popular mods (matching the real mod's
+// own manifest/id/description) with combat-cheat modules injected
+// directly into the real mod's own package namespace - so these entries
+// deliberately key on the recurring MODULE class names and injected
+// sub-paths that are consistent across every disguise seen so far,
+// rather than on outer package prefixes that can coincide with a real,
+// untampered mod's actual namespace (net.raphimc.immediatelyfast and
+// net.blay09.mods.balm both belong to real mods - only the specific
+// injected sub-paths below are unique to the tampered copies).
+const std::vector<std::string> kDistinctiveClientSignatures = {
+    "dev.lvstrng.argon.mixin.EndCrystalItemMixin",
+    "CrystalOptimizer",
+    "NoMissDelay",
+    "ShieldDisabler",
+    "TotemOffhand",
+    "AutoWTap",
+    "com/chorus/impl/modules/combat/",
+    "org/apache/core/e/e/AttackEntityListener",
+    "com/google/common/jimfs/mixin/",
+    "org/chainlibs/module/impl/modules/",
+    "net/fabricnetworkingimpl/AsyncJReset",
+    "net/blay09/mods/balm/client/feature/module/impl/crystal/",
+    "net/blay09/mods/balm/client/screen/click/dropdown/",
+    "net/raphimc/immediatelyfast/module/modules/combat/",
+};
+
 // SysMain, DPS, EventLog, Bam and DcomLaunch are checked (with the more
 // precise "Disabled" start-type signal) by ScanForBypassMethods() instead,
 // alongside the other anti-forensic bypass checks.
@@ -1058,7 +1081,7 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
     std::vector<CompiledSignature> compiled;
     compiled.reserve(signatures.size() + kClientSignatureGroups.size() * 8 +
                      kJVMInjectionDetections.size() + kDNSCacheDetections.size() +
-                     kSystemTamperingDetections.size());
+                     kSystemTamperingDetections.size() + kDistinctiveClientSignatures.size());
 
     for (const auto& sig : signatures) {
         Severity sev = Severity::Detect;
@@ -1096,12 +1119,24 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
         }
     }
 
-    for (const auto& sig : kSystemTamperingDetections) {
+    for (const auto& sig : kDistinctiveClientSignatures) {
         const std::string low = ToLower(sig);
         if (!low.empty()) {
-            compiled.push_back({sig + " (System Tampering)", low, Severity::Suspicious, low[0]});
+            compiled.push_back({sig + " (Distinctive Client)", low, Severity::Detect, low[0]});
         }
     }
+
+    // kSystemTamperingDetections is intentionally NOT compiled into the
+    // memory string scan: searching for the literal NAMES of forensic
+    // artifacts (e.g. "JumpList", "AppCompatCache") as raw memory strings
+    // is unreliable - now that v1.0.3 also scans loaded module images
+    // (MEM_IMAGE), these exact words legitimately live inside Windows'
+    // own shell/compatibility DLLs that get loaded into virtually every
+    // process, causing false positives on completely clean machines.
+    // BypassScanner already checks the real underlying state (registry
+    // policy values, service status, actual event-log-cleared events)
+    // directly and reliably - this list is kept only for reference/reuse
+    // by future checks, not as an active memory-scan source.
 
     for (const auto& sig : kFullwidthObfuscatedCheats) {
         const std::string low = ToLower(sig);

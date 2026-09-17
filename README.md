@@ -1,4 +1,4 @@
-# Zeezy Cheat Scanner
+# Daxy Cheat Scanner
 
 A screenshare tool that scans a `java.exe`/`javaw.exe` process's memory (ASCII and UTF-16,
 private/mapped/image regions) for known and unknown cheat strings, cross-checks its JVM
@@ -15,7 +15,7 @@ Showcase: https://streamable.com/oqqkj8
 
 DC Server: https://discord.gg/GkD535S2qh
 
-Discord: .zeezy
+Discord: .daxy
 
 ## Download
 
@@ -70,6 +70,16 @@ a version tag is pushed — no build tools required, just download and run.
   silently read as "clean."
 - **Report redaction** — the Windows account name in any path shown in the report is replaced
   with `<redacted>` before it's written, since reports get shared/screenshotted.
+- **Distinctive Clients** — a separate, high-confidence tab for signatures verified against real
+  cheat-client sample jars. Several known clients ship as trojanized copies of real, popular
+  mods (matching the real mod's manifest/id/description exactly, with combat-cheat modules
+  injected directly into the real mod's own package namespace), so these signatures
+  deliberately key on the recurring module class names and injected sub-paths that are
+  consistent across every disguise seen so far, rather than on outer package names — several of
+  which belong to genuine mods and would otherwise false-flag real, clean installs. A match
+  here is the strongest signal this scan produces, but still confirm it yourself: these clients
+  are specifically built to look legitimate, so no automated tool should be the last word before
+  a ban.
 - Generates a single self-contained HTML report (`detection-results.html`) and opens it in the
   default browser when the scan finishes.
 
@@ -92,7 +102,7 @@ a version tag is pushed — no build tools required, just download and run.
   testing against real cheat/mod samples needs a curated corpus this repo doesn't ship.
 - **Releases are unsigned** (no Authenticode certificate) but are hash-verified and carry a
   [SLSA build provenance attestation](../../attestations) — verify with
-  `gh attestation verify "Zeezy Cheat Scanner.exe" --repo <owner>/<repo>`.
+  `gh attestation verify "Daxy Cheat Scanner.exe" --repo <owner>/<repo>`.
 
 ## Prerequisites
 
@@ -116,7 +126,7 @@ cmake --build --preset release-static
 ```
 
 The first configure will take a while — vcpkg builds `glfw3` and `imgui` from source for the
-static triplet. The resulting binary is `build-static/Release/Zeezy Cheat Scanner.exe`.
+static triplet. The resulting binary is `build-static/Release/Daxy Cheat Scanner.exe`.
 
 > The bundled preset targets the `Visual Studio 18 2026` generator. If your installed Visual
 > Studio version uses a different generator name, edit `"generator"` in `CMakePresets.json`
