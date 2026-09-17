@@ -12,6 +12,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <TlHelp32.h>
 
 #include <algorithm>
 #include <array>
@@ -887,6 +888,40 @@ const std::unordered_set<std::string> kYellowLookup = [] {
     return out;
 }();
 
+// Finds the PID of a running process by its exact image name (case-
+// insensitive), or 0 if it isn't running.
+uint32_t FindProcessIdByName(const wchar_t* exeName) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    uint32_t pid = 0;
+
+    if (Process32FirstW(snap, &entry)) {
+        do {
+            if (_wcsicmp(entry.szExeFile, exeName) == 0) {
+                pid = entry.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &entry));
+    }
+
+    CloseHandle(snap);
+    return pid;
+}
+
+// True if this process's modules can even be enumerated - a cheap probe
+// used to tell "nothing suspicious found" apart from "couldn't check at
+// all" (e.g. a Protected Process Light target like modern Windows
+// Defender's MsMpEng.exe, which blocks this outright even for admins).
+bool CanEnumerateModules(uint32_t pid) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(snap);
+    return true;
+}
+
 bool IsReadableProtection(DWORD protect) {
     constexpr DWORD mask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
         PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
@@ -1431,6 +1466,43 @@ void MemoryScanner::Worker(uint32_t pid, ScanOptions options, std::string proces
         RegisterDetection(finalSummary,
             finding.processName + " running (pid " + std::to_string(finding.pid) + ") (External Tool)",
             finding.severity, 0, 0);
+    }
+
+    // Some clients are reported to load a module inside MsMpEng.exe
+    // (Windows Defender's own antimalware service) specifically because a
+    // trusted, heavily-excluded-from-scrutiny AV process is an appealing
+    // place to hide. Reuse the same module-trust/PE-header/hidden-payload
+    // checks already run against the game, pointed at Defender's process
+    // instead. On modern Windows, MsMpEng.exe usually runs as a Protected
+    // Process Light, which can block module enumeration outright even for
+    // an administrator - if that happens here, it's reported as a gap
+    // rather than silently read as "nothing found".
+    {
+        const uint32_t defenderPid = FindProcessIdByName(L"MsMpEng.exe");
+        if (defenderPid == 0) {
+            finalSummary.scanNotes.push_back(
+                "MsMpEng.exe (Windows Defender) was not running - the Defender module check was skipped.");
+        } else if (!CanEnumerateModules(defenderPid)) {
+            finalSummary.scanNotes.push_back(
+                "Could not enumerate MsMpEng.exe's modules (likely blocked by Protected Process Light) - "
+                "the Defender module check could not run.");
+        } else {
+            for (const auto& finding : ScanModuleTrust(defenderPid)) {
+                RegisterDetection(finalSummary,
+                    "MsMpEng.exe - " + finding.moduleName + ": " + finding.detail + " (MsMpEng)",
+                    finding.severity, 0, 0);
+            }
+            for (const auto& finding : ScanForErasedPEHeaders(defenderPid)) {
+                RegisterDetection(finalSummary,
+                    "MsMpEng.exe - " + finding.moduleName + ": " + finding.detail + " (MsMpEng)",
+                    finding.severity, 0, 0);
+            }
+            for (const auto& finding : ScanForHiddenPayloads(defenderPid)) {
+                RegisterDetection(finalSummary,
+                    "MsMpEng.exe - " + finding.moduleName + ": " + finding.detail + " (MsMpEng)",
+                    finding.severity, 0, 0);
+            }
+        }
     }
 
     {

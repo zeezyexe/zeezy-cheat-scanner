@@ -275,10 +275,11 @@ std::string GenerateHtmlReport(const scanner::ScanSummary& summary, const std::s
         {"External Tool", "(external tool)", false},
         {"Java Agent", "(java agent)", false},
         {"Distinctive Client", "(distinctive client)", false},
+        {"MsMpEng Module", "(msmpeng)", false},
         {"JVM Launch Flag", nullptr, false},
     };
     for (const auto& d : sortedDetections) {
-        if (IsBypassDetection(d.message)) { categories[11].present = true; continue; }
+        if (IsBypassDetection(d.message)) { categories[12].present = true; continue; }
         bool tagged = false;
         if (IsSystemIntegrityDetection(d.message)) {
             categories[3].present = true; // covers both "(System Integrity)" and "(System Tampering)"
